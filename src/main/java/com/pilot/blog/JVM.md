@@ -2743,3 +2743,1458 @@ Caused by: java.lang.OutOfMemoryError: Metaspace
 ````
 
 注意: 这里的 OOM 伴随的是 `java.lang.OutOfMemoryError: Metaspace` 也就是元数据溢出。
+
+### 调试排错 - Java 线程Dump分析
+
+> > Thread Dump是非常有用的诊断Java应用问题的工具。
+
+#### Thread Dump介绍
+
+- 什么是Thread Dump
+
+  Thread Dump是非常有用的诊断Java应用问题的工具。每一个Java虚拟机都有及时生成所有线程在某一点状态的thread-dump的能力，虽然各个 Java虚拟机打印的thread dump略有不同，但是 大多都提供了当前活动线程的快照，及JVM中所有Java线程的堆栈跟踪信息，堆栈信息一般包含完整的类名及所执行的方法，如果可能的话还有源代码的行数。
+
+- Thread Dump特点
+
+  - 能在各种操作系统下使用；
+  - 能在各种Java应用服务器下使用；
+  - 能在生产环境下使用而不影响系统的性能；
+  - 能将问题直接定位到应用程序的代码行上；
+
+- Thread Dump抓取
+
+  - 操作系统命令获取ThreadDump
+
+    ````sh
+    ps –ef | grep java
+    kill -3 <pid>
+    ````
+
+  > 一定要谨慎, 一步不慎就可能让服务器进程被杀死。kill -9 命令会杀死进程。
+
+  - JVM 自带的工具获取线程堆栈
+
+    ````sh
+    jps 或 ps –ef | grep java （获取PID）
+    jstack [-l ] <pid> | tee -a jstack.log（获取ThreadDump）
+    ````
+
+#### Thread Dump分析
+
+- Thread Dump信息
+
+  - 头部信息：时间，JVM信息
+
+    ````sh
+    2011-11-02 19:05:06  
+    Full thread dump Java HotSpot(TM) Server VM (16.3-b01 mixed mode): 
+    ````
+
+  - 线程INFO信息块
+
+    ````sh
+    1. "Timer-0" daemon prio=10 tid=0xac190c00 nid=0xaef in Object.wait() [0xae77d000] 
+    # 线程名称：Timer-0；线程类型：daemon；优先级: 10，默认是5；
+    # JVM线程id：tid=0xac190c00，JVM内部线程的唯一标识（通过java.lang.Thread.getId()获取，通常用自增方式实现）。
+    # 对应系统线程id（NativeThread ID）：nid=0xaef，和top命令查看的线程pid对应，不过一个是10进制，一个是16进制。（通过命令：top -H -p pid，可以查看该进程的所有线程信息）
+    # 线程状态：in Object.wait()；
+    # 起始栈地址：[0xae77d000]，对象的内存地址，通过JVM内存查看工具，能够看出线程是在哪儿个对象上等待；
+    2.  java.lang.Thread.State: TIMED_WAITING (on object monitor)
+    3.  at java.lang.Object.wait(Native Method)
+    4.  -waiting on <0xb3885f60> (a java.util.TaskQueue)     # 继续wait 
+    5.  at java.util.TimerThread.mainLoop(Timer.java:509)
+    6.  -locked <0xb3885f60> (a java.util.TaskQueue)         # 已经locked
+    7.  at java.util.TimerThread.run(Timer.java:462)
+    Java thread statck trace：是上面2-7行的信息。到目前为止这是最重要的数据，Java stack trace提供了大部分信息来精确定位问题根源。
+    ````
+
+  - Java thread statck trace详解
+
+    **堆栈信息应该逆向解读**：程序先执行的是第7行，然后是第6行，依次类推。
+
+    ````sh
+    - locked <0xb3885f60> (a java.util.ArrayList)
+    - waiting on <0xb3885f60> (a java.util.ArrayList) 
+    ````
+
+    **也就是说对象先上锁，锁住对象0xb3885f60，然后释放该对象锁，进入waiting状态**。为啥会出现这样的情况呢？看看下面的java代码示例，就会明白：
+
+    ````java
+    synchronized(obj) {  
+       .........  
+       obj.wait();  
+       .........  
+    }
+    ````
+
+    如上，线程的执行过程，先用 `synchronized` 获得了这个对象的 Monitor（对应于 `locked <0xb3885f60>` ）。当执行到 `obj.wait()`，线程即放弃了 Monitor的所有权，进入 “wait set”队列（对应于 `waiting on <0xb3885f60>` ）。
+
+    **在堆栈的第一行信息中，进一步标明了线程在代码级的状态**，例如：
+
+    ```bash
+    java.lang.Thread.State: TIMED_WAITING (parking)
+    ```
+
+    解释如下：
+
+    ```bash
+    |blocked|
+    
+    > This thread tried to enter asynchronized block, but the lock was taken by another thread. This thread isblocked until the lock gets released.
+    
+    |blocked (on thin lock)|
+    
+    > This is the same state asblocked, but the lock in question is a thin lock.
+    
+    |waiting|
+    
+    > This thread calledObject.wait() on an object. The thread will remain there until some otherthread sends a notification to that object.
+    
+    |sleeping|
+    
+    > This thread calledjava.lang.Thread.sleep().
+    
+    |parked|
+    
+    > This thread calledjava.util.concurrent.locks.LockSupport.park().
+    
+    |suspended|
+    
+    > The thread's execution wassuspended by java.lang.Thread.suspend() or a JVMTI agent call.
+    ```
+
+- Thread状态分析
+
+  线程的状态是一个很重要的东西，因此thread dump中会显示这些状态，通过对这些状态的分析，能够得出线程的运行状况，进而发现可能存在的问题。**线程的状态在Thread.State这个枚举类型中定义**：
+
+  ````java
+  public enum State   
+  {  
+         /** 
+          * Thread state for a thread which has not yet started. 
+          */  
+         NEW,  
+           
+         /** 
+          * Thread state for a runnable thread.  A thread in the runnable 
+          * state is executing in the Java virtual machine but it may 
+          * be waiting for other resources from the operating system 
+          * such as processor. 
+          */  
+         RUNNABLE,  
+           
+         /** 
+          * Thread state for a thread blocked waiting for a monitor lock. 
+          * A thread in the blocked state is waiting for a monitor lock 
+          * to enter a synchronized block/method or  
+          * reenter a synchronized block/method after calling 
+          * {@link Object#wait() Object.wait}. 
+          */  
+         BLOCKED,  
+       
+         /** 
+          * Thread state for a waiting thread. 
+          * A thread is in the waiting state due to calling one of the  
+          * following methods: 
+          * <ul> 
+          *   <li>{@link Object#wait() Object.wait} with no timeout</li> 
+          *   <li>{@link #join() Thread.join} with no timeout</li> 
+          *   <li>{@link LockSupport#park() LockSupport.park}</li> 
+          * </ul> 
+          *  
+          * <p>A thread in the waiting state is waiting for another thread to 
+          * perform a particular action.   
+          * 
+          * For example, a thread that has called <tt>Object.wait()</tt> 
+          * on an object is waiting for another thread to call  
+          * <tt>Object.notify()</tt> or <tt>Object.notifyAll()</tt> on  
+          * that object. A thread that has called <tt>Thread.join()</tt>  
+          * is waiting for a specified thread to terminate. 
+          */  
+         WAITING,  
+           
+         /** 
+          * Thread state for a waiting thread with a specified waiting time. 
+          * A thread is in the timed waiting state due to calling one of  
+          * the following methods with a specified positive waiting time: 
+          * <ul> 
+          *   <li>{@link #sleep Thread.sleep}</li> 
+          *   <li>{@link Object#wait(long) Object.wait} with timeout</li> 
+          *   <li>{@link #join(long) Thread.join} with timeout</li> 
+          *   <li>{@link LockSupport#parkNanos LockSupport.parkNanos}</li>  
+          *   <li>{@link LockSupport#parkUntil LockSupport.parkUntil}</li> 
+          * </ul> 
+          */  
+         TIMED_WAITING,  
+    
+         /** 
+          * Thread state for a terminated thread. 
+          * The thread has completed execution. 
+          */  
+         TERMINATED;  
+  }
+  ````
+
+  - NEW：
+
+  每一个线程，在堆内存中都有一个对应的Thread对象。Thread t = new Thread();当刚刚在堆内存中创建Thread对象，还没有调用t.start()方法之前，线程就处在NEW状态。在这个状态上，线程与普通的java对象没有什么区别，就仅仅是一个堆内存中的对象。
+
+  - RUNNABLE：
+
+  该状态表示线程具备所有运行条件，在运行队列中准备操作系统的调度，或者正在运行。 这个状态的线程比较正常，但如果线程长时间停留在在这个状态就不正常了，这说明线程运行的时间很长（存在性能问题），或者是线程一直得不得执行的机会（存在线程饥饿的问题）。
+
+  - BLOCKED：
+
+  线程正在等待获取java对象的监视器(也叫内置锁)，即线程正在等待进入由synchronized保护的方法或者代码块。synchronized用来保证原子性，任意时刻最多只能由一个线程进入该临界区域，其他线程只能排队等待。
+
+  - WAITING：
+
+  处在该线程的状态，正在等待某个事件的发生，只有特定的条件满足，才能获得执行机会。而产生这个特定的事件，通常都是另一个线程。也就是说，如果不发生特定的事件，那么处在该状态的线程一直等待，不能获取执行的机会。比如：
+
+  A线程调用了obj对象的obj.wait()方法，如果没有线程调用obj.notify或obj.notifyAll，那么A线程就没有办法恢复运行； 如果A线程调用了LockSupport.park()，没有别的线程调用LockSupport.unpark(A)，那么A没有办法恢复运行。 TIMED_WAITING：
+
+  J.U.C中很多与线程相关类，都提供了限时版本和不限时版本的API。TIMED_WAITING意味着线程调用了限时版本的API，正在等待时间流逝。当等待时间过去后，线程一样可以恢复运行。如果线程进入了WAITING状态，一定要特定的事件发生才能恢复运行；而处在TIMED_WAITING的线程，如果特定的事件发生或者是时间流逝完毕，都会恢复运行。
+
+  - TERMINATED：
+
+  线程执行完毕，执行完run方法正常返回，或者抛出了运行时异常而结束，线程都会停留在这个状态。这个时候线程只剩下Thread对象了，没有什么用了。
+
+- 关键状态分析
+
+  - **Wait on condition**：The thread is either sleeping or waiting to be notified by another thread.
+
+    该状态说明它在等待另一个条件的发生，来把自己唤醒，或者干脆它是调用了 sleep(n)。
+
+    此时线程状态大致为以下几种：
+
+    ````sh
+    java.lang.Thread.State: WAITING (parking)：一直等那个条件发生；
+    java.lang.Thread.State: TIMED_WAITING (parking或sleeping)：定时的，那个条件不到来，也将定时唤醒自己。
+    ````
+
+  - **Waiting for Monitor Entry 和 in Object.wait()**：The thread is waiting to get the lock for an object (some other thread may be holding the lock). This happens if two or more threads try to execute synchronized code. Note that the lock is always for an object and not for individual methods.
+
+  在多线程的JAVA程序中，实现线程之间的同步，就要说说 Monitor。**Monitor是Java中用以实现线程之间的互斥与协作的主要手段，它可以看成是对象或者Class的锁。每一个对象都有，也仅有一个 Monitor** 。下面这个图，描述了线程和 Monitor之间关系，以及线程的状态转换图：
+
+  ![image](https://www.pdai.tech/_images/jvm/java-jvm-debug-1.png)
+
+  如上图，每个Monitor在某个时刻，只能被一个线程拥有，**该线程就是 “ActiveThread”，而其它线程都是 “Waiting Thread”，分别在两个队列“Entry Set”和“Wait Set”里等候**。在“Entry Set”中等待的线程状态是“Waiting for monitor entry”，而在“Wait Set”中等待的线程状态是“in Object.wait()”。
+
+  先看“Entry Set”里面的线程。我们称被 synchronized保护起来的代码段为临界区。**当一个线程申请进入临界区时，它就进入了“Entry Set”队列**。对应的 code就像：
+
+  ````java
+  synchronized(obj) {
+     .........
+  }
+  ````
+
+  这时有两种可能性：
+
+  - 该 monitor不被其它线程拥有， Entry Set里面也没有其它等待线程。本线程即成为相应类或者对象的 Monitor的 Owner，执行临界区的代码。
+  - 该 monitor被其它线程拥有，本线程在 Entry Set队列中等待。
+
+  在第一种情况下，线程将处于 “Runnable”的状态，而第二种情况下，线程 DUMP会显示处于 “waiting for monitor entry”。如下：
+
+  ````java
+  "Thread-0" prio=10 tid=0x08222eb0 nid=0x9 waiting for monitor entry [0xf927b000..0xf927bdb8] 
+  at testthread.WaitThread.run(WaitThread.java:39) 
+  - waiting to lock <0xef63bf08> (a java.lang.Object) 
+  - locked <0xef63beb8> (a java.util.ArrayList) 
+  at java.lang.Thread.run(Thread.java:595) 
+  ````
+
+  **临界区的设置，是为了保证其内部的代码执行的原子性和完整性**。但是因为临界区在任何时间只允许线程串行通过，这和我们多线程的程序的初衷是相反的。**如果在多线程的程序中，大量使用 synchronized，或者不适当的使用了它，会造成大量线程在临界区的入口等待，造成系统的性能大幅下降**。如果在线程 DUMP中发现了这个情况，应该审查源码，改进程序。
+
+  再看“Wait Set”里面的线程。**当线程获得了 Monitor，进入了临界区之后，如果发现线程继续运行的条件没有满足，它则调用对象（一般就是被 synchronized 的对象）的 wait() 方法，放弃 Monitor，进入 “Wait Set”队列。只有当别的线程在该对象上调用了 notify() 或者 notifyAll()，“Wait Set”队列中线程才得到机会去竞争**，但是只有一个线程获得对象的Monitor，恢复到运行态。在 “Wait Set”中的线程， DUMP中表现为： in Object.wait()。如下：
+
+  ````java
+  "Thread-1" prio=10 tid=0x08223250 nid=0xa in Object.wait() [0xef47a000..0xef47aa38] 
+   at java.lang.Object.wait(Native Method) 
+   - waiting on <0xef63beb8> (a java.util.ArrayList) 
+   at java.lang.Object.wait(Object.java:474) 
+   at testthread.MyWaitThread.run(MyWaitThread.java:40) 
+   - locked <0xef63beb8> (a java.util.ArrayList) 
+   at java.lang.Thread.run(Thread.java:595) 
+  综上，一般CPU很忙时，则关注runnable的线程，CPU很闲时，则关注waiting for monitor entry的线程。
+  ````
+
+  - **JDK 5.0 的 Lock**
+
+  上面提到如果 synchronized和 monitor机制运用不当，可能会造成多线程程序的性能问题。在 JDK 5.0中，引入了 Lock机制，从而使开发者能更灵活的开发高性能的并发多线程程序，可以替代以往 JDK中的 synchronized和 Monitor的 机制。但是，**要注意的是，因为 Lock类只是一个普通类，JVM无从得知 Lock对象的占用情况，所以在线程 DUMP中，也不会包含关于 Lock的信息**， 关于死锁等问题，就不如用 synchronized的编程方式容易识别。
+
+- 关键状态示例
+
+  - **显示BLOCKED状态**
+
+    ````java
+    package jstack;  
+    
+    public class BlockedState  
+    {  
+        private static Object object = new Object();  
+        
+        public static void main(String[] args)  
+        {  
+            Runnable task = new Runnable() {  
+    
+                @Override  
+                public void run()  
+                {  
+                    synchronized (object)  
+                    {  
+                        long begin = System.currentTimeMillis();  
+      
+                        long end = System.currentTimeMillis();  
+    
+                        // 让线程运行5分钟,会一直持有object的监视器  
+                        while ((end - begin) <= 5 * 60 * 1000)  
+                        {  
+      
+                        }  
+                    }  
+                }  
+            };  
+    
+            new Thread(task, "t1").start();  
+            new Thread(task, "t2").start();  
+        }  
+    }
+    ````
+
+    先获取object的线程会执行5分钟，**这5分钟内会一直持有object的监视器，另一个线程无法执行处在BLOCKED状态**：
+
+    ````java
+    Full thread dump Java HotSpot(TM) Server VM (20.12-b01 mixed mode):  
+      
+    "DestroyJavaVM" prio=6 tid=0x00856c00 nid=0x1314 waiting on condition [0x00000000]  
+    java.lang.Thread.State: RUNNABLE  
+    
+    "t2" prio=6 tid=0x27d7a800 nid=0x1350 waiting for monitor entry [0x2833f000]  
+    java.lang.Thread.State: BLOCKED (on object monitor)  
+         at jstack.BlockedState$1.run(BlockedState.java:17)  
+         - waiting to lock <0x1cfcdc00> (a java.lang.Object)  
+         at java.lang.Thread.run(Thread.java:662)  
+    
+    "t1" prio=6 tid=0x27d79400 nid=0x1338 runnable [0x282ef000]  
+     java.lang.Thread.State: RUNNABLE  
+         at jstack.BlockedState$1.run(BlockedState.java:22)  
+         - locked <0x1cfcdc00> (a java.lang.Object)  
+         at java.lang.Thread.run(Thread.java:662)
+    ````
+
+    通过thread dump可以看到：**t2线程确实处在BLOCKED (on object monitor)。waiting for monitor entry 等待进入synchronized保护的区域**。
+
+    - **显示WAITING状态**
+
+      ````java
+      package jstack;  
+        
+      public class WaitingState  
+      {  
+          private static Object object = new Object();  
+      
+          public static void main(String[] args)  
+          {  
+              Runnable task = new Runnable() {  
+      
+                  @Override  
+                  public void run()  
+                  {  
+                      synchronized (object)  
+                      {  
+                          long begin = System.currentTimeMillis();  
+                          long end = System.currentTimeMillis();  
+      
+                          // 让线程运行5分钟,会一直持有object的监视器  
+                          while ((end - begin) <= 5 * 60 * 1000)  
+                          {  
+                              try  
+                              {  
+                                  // 进入等待的同时,会进入释放监视器  
+                                  object.wait();  
+                              } catch (InterruptedException e)  
+                              {  
+                                  e.printStackTrace();  
+                              }  
+                          }  
+                      }  
+                  }  
+              };  
+      
+              new Thread(task, "t1").start();  
+              new Thread(task, "t2").start();  
+          }  
+      }
+      ````
+
+      ````java
+      Full thread dump Java HotSpot(TM) Server VM (20.12-b01 mixed mode):  
+      
+      "DestroyJavaVM" prio=6 tid=0x00856c00 nid=0x1734 waiting on condition [0x00000000]  
+      java.lang.Thread.State: RUNNABLE  
+      
+      "t2" prio=6 tid=0x27d7e000 nid=0x17f4 in Object.wait() [0x2833f000]  
+      java.lang.Thread.State: WAITING (on object monitor)  
+           at java.lang.Object.wait(Native Method)  
+           - waiting on <0x1cfcdc00> (a java.lang.Object)  
+           at java.lang.Object.wait(Object.java:485)  
+           at jstack.WaitingState$1.run(WaitingState.java:26)  
+           - locked <0x1cfcdc00> (a java.lang.Object)  
+           at java.lang.Thread.run(Thread.java:662)  
+      
+      "t1" prio=6 tid=0x27d7d400 nid=0x17f0 in Object.wait() [0x282ef000]  
+      java.lang.Thread.State: WAITING (on object monitor)  
+           at java.lang.Object.wait(Native Method)  
+           - waiting on <0x1cfcdc00> (a java.lang.Object)  
+           at java.lang.Object.wait(Object.java:485)  
+           at jstack.WaitingState$1.run(WaitingState.java:26)  
+           - locked <0x1cfcdc00> (a java.lang.Object)  
+           at java.lang.Thread.run(Thread.java:662)
+      ````
+
+      可以发现t1和t2都处在WAITING (on object monitor)，进入等待状态的原因是调用了in Object.wait()。通过J.U.C包下的锁和条件队列，也是这个效果，大家可以自己实践下。
+
+    - **显示TIMED_WAITING状态**
+
+      ````java
+      package jstack;  
+      
+      import java.util.concurrent.TimeUnit;  
+      import java.util.concurrent.locks.Condition;  
+      import java.util.concurrent.locks.Lock;  
+      import java.util.concurrent.locks.ReentrantLock;  
+        
+      public class TimedWaitingState  
+      {  
+          // java的显示锁,类似java对象内置的监视器  
+          private static Lock lock = new ReentrantLock();  
+        
+          // 锁关联的条件队列(类似于object.wait)  
+          private static Condition condition = lock.newCondition();  
+      
+          public static void main(String[] args)  
+          {  
+              Runnable task = new Runnable() {  
+      
+                  @Override  
+                  public void run()  
+                  {  
+                      // 加锁,进入临界区  
+                      lock.lock();  
+        
+                      try  
+                      {  
+                          condition.await(5, TimeUnit.MINUTES);  
+                      } catch (InterruptedException e)  
+                      {  
+                          e.printStackTrace();  
+                      }  
+        
+                      // 解锁,退出临界区  
+                      lock.unlock();  
+                  }  
+              };  
+        
+              new Thread(task, "t1").start();  
+              new Thread(task, "t2").start();  
+          }  
+      }
+      ````
+
+      ````java
+      Full thread dump Java HotSpot(TM) Server VM (20.12-b01 mixed mode):  
+      
+      "DestroyJavaVM" prio=6 tid=0x00856c00 nid=0x169c waiting on condition [0x00000000]  
+      java.lang.Thread.State: RUNNABLE  
+      
+      "t2" prio=6 tid=0x27d7d800 nid=0xc30 waiting on condition [0x2833f000]  
+      java.lang.Thread.State: TIMED_WAITING (parking)  
+           at sun.misc.Unsafe.park(Native Method)  
+           - parking to wait for  <0x1cfce5b8> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)  
+           at java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:196)  
+           at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:2116)  
+           at jstack.TimedWaitingState$1.run(TimedWaitingState.java:28)  
+           at java.lang.Thread.run(Thread.java:662)  
+      
+      "t1" prio=6 tid=0x280d0c00 nid=0x16e0 waiting on condition [0x282ef000]  
+      java.lang.Thread.State: TIMED_WAITING (parking)  
+           at sun.misc.Unsafe.park(Native Method)  
+           - parking to wait for  <0x1cfce5b8> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)  
+           at java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:196)  
+           at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:2116)  
+           at jstack.TimedWaitingState$1.run(TimedWaitingState.java:28)  
+           at java.lang.Thread.run(Thread.java:662)  
+      ````
+
+      可以看到t1和t2线程都处在java.lang.Thread.State: TIMED_WAITING (parking)，这个parking代表是调用的JUC下的工具类，而不是java默认的监视器。
+
+#### 案例分析
+
+- 问题场景
+
+  - **CPU飙高，load高，响应很慢**
+    1. 一个请求过程中多次dump；
+    2. 对比多次dump文件的runnable线程，如果执行的方法有比较大变化，说明比较正常。如果在执行同一个方法，就有一些问题了；
+  - **查找占用CPU最多的线程**
+    1. 使用命令：top -H -p pid（pid为被测系统的进程号），找到导致CPU高的线程ID，对应thread dump信息中线程的nid，只不过一个是十进制，一个是十六进制；
+    2. 在thread dump中，根据top命令查找的线程id，查找对应的线程堆栈信息；
+  - **CPU使用率不高但是响应很慢**
+
+  进行dump，查看是否有很多thread struck在了i/o、数据库等地方，定位瓶颈原因；
+
+  - **请求无法响应**
+
+  多次dump，对比是否所有的runnable线程都一直在执行相同的方法，如果是的，恭喜你，锁住了！
+
+- 死锁
+
+  死锁经常表现为程序的停顿，或者不再响应用户的请求。从操作系统上观察，对应进程的CPU占用率为零，很快会从top或prstat的输出中消失。
+
+  比如在下面这个示例中，是个较为典型的死锁情况：
+
+  ````java
+  "Thread-1" prio=5 tid=0x00acc490 nid=0xe50 waiting for monitor entry [0x02d3f000 
+  ..0x02d3fd68] 
+  at deadlockthreads.TestThread.run(TestThread.java:31) 
+  - waiting to lock <0x22c19f18> (a java.lang.Object) 
+  - locked <0x22c19f20> (a java.lang.Object) 
+  
+  "Thread-0" prio=5 tid=0x00accdb0 nid=0xdec waiting for monitor entry [0x02cff000 
+  ..0x02cff9e8] 
+  at deadlockthreads.TestThread.run(TestThread.java:31) 
+  - waiting to lock <0x22c19f20> (a java.lang.Object) 
+  - locked <0x22c19f18> (a java.lang.Object) 
+  ````
+
+  在 JAVA 5中加强了对死锁的检测。**线程 Dump中可以直接报告出 Java级别的死锁**，如下所示：
+
+  ````java
+  Found one Java-level deadlock: 
+  ============================= 
+  "Thread-1": 
+  waiting to lock monitor 0x0003f334 (object 0x22c19f18, a java.lang.Object), 
+  which is held by "Thread-0" 
+  
+  "Thread-0": 
+  waiting to lock monitor 0x0003f314 (object 0x22c19f20, a java.lang.Object), 
+  which is held by "Thread-1"
+  ````
+
+- 热锁
+
+  热锁，也往往是导致系统性能瓶颈的主要因素。其表现特征为：**由于多个线程对临界区，或者锁的竞争**，可能出现：
+
+  - **频繁的线程的上下文切换**：从操作系统对线程的调度来看，当线程在等待资源而阻塞的时候，操作系统会将之切换出来，放到等待的队列，当线程获得资源之后，调度算法会将这个线程切换进去，放到执行队列中。
+  - **大量的系统调用**：因为线程的上下文切换，以及热锁的竞争，或者临界区的频繁的进出，都可能导致大量的系统调用。
+  - **大部分CPU开销用在“系统态”**：线程上下文切换，和系统调用，都会导致 CPU在 “系统态 ”运行，换而言之，虽然系统很忙碌，但是CPU用在 “用户态 ”的比例较小，应用程序得不到充分的 CPU资源。
+  - **随着CPU数目的增多，系统的性能反而下降**。因为CPU数目多，同时运行的线程就越多，可能就会造成更频繁的线程上下文切换和系统态的CPU开销，从而导致更糟糕的性能。
+
+  上面的描述，都是一个 scalability（可扩展性）很差的系统的表现。从整体的性能指标看，由于线程热锁的存在，程序的响应时间会变长，吞吐量会降低。
+
+  **那么，怎么去了解 “热锁 ”出现在什么地方呢**？
+
+  一个重要的方法是 结合操作系统的各种工具观察系统资源使用状况，以及收集Java线程的DUMP信息，看线程都阻塞在什么方法上，了解原因，才能找到对应的解决方法。
+
+#### JVM重要线程
+
+JVM运行过程中产生的一些比较重要的线程罗列如下：
+
+| 线程名称                        | 解释说明                                                     |
+| ------------------------------- | ------------------------------------------------------------ |
+| Attach Listener                 | Attach Listener 线程是负责接收到外部的命令，而对该命令进行执行的并把结果返回给发送者。通常我们会用一些命令去要求JVM给我们一些反馈信息，如：java -version、jmap、jstack等等。 如果该线程在JVM启动的时候没有初始化，那么，则会在用户第一次执行JVM命令时，得到启动。 |
+| Signal Dispatcher               | 前面提到Attach Listener线程的职责是接收外部JVM命令，当命令接收成功后，会交给signal dispather线程去进行分发到各个不同的模块处理命令，并且返回处理结果。signal dispather线程也是在第一次接收外部JVM命令时，进行初始化工作。 |
+| CompilerThread0                 | 用来调用JITing，实时编译装卸class 。 通常，JVM会启动多个线程来处理这部分工作，线程名称后面的数字也会累加，例如：CompilerThread1。 |
+| Concurrent Mark-Sweep GC Thread | 并发标记清除垃圾回收器（就是通常所说的CMS GC）线程， 该线程主要针对于老年代垃圾回收。ps：启用该垃圾回收器，需要在JVM启动参数中加上：-XX:+UseConcMarkSweepGC。 |
+| DestroyJavaVM                   | 执行main()的线程，在main执行完后调用JNI中的 jni_DestroyJavaVM() 方法唤起DestroyJavaVM 线程，处于等待状态，等待其它线程（Java线程和Native线程）退出时通知它卸载JVM。每个线程退出时，都会判断自己当前是否是整个JVM中最后一个非deamon线程，如果是，则通知DestroyJavaVM 线程卸载JVM。 |
+| Finalizer Thread                | 这个线程也是在main线程之后创建的，其优先级为10，主要用于在垃圾收集前，调用对象的finalize()方法；关于Finalizer线程的几点：1) 只有当开始一轮垃圾收集时，才会开始调用finalize()方法；因此并不是所有对象的finalize()方法都会被执行；2) 该线程也是daemon线程，因此如果虚拟机中没有其他非daemon线程，不管该线程有没有执行完finalize()方法，JVM也会退出；3) JVM在垃圾收集时会将失去引用的对象包装成Finalizer对象（Reference的实现），并放入ReferenceQueue，由Finalizer线程来处理；最后将该Finalizer对象的引用置为null，由垃圾收集器来回收；4) JVM为什么要单独用一个线程来执行finalize()方法呢？如果JVM的垃圾收集线程自己来做，很有可能由于在finalize()方法中误操作导致GC线程停止或不可控，这对GC线程来说是一种灾难； |
+| Low Memory Detector             | 这个线程是负责对可使用内存进行检测，如果发现可用内存低，分配新的内存空间。 |
+| Reference Handler               | JVM在创建main线程后就创建Reference Handler线程，其优先级最高，为10，它主要用于处理引用对象本身（软引用、弱引用、虚引用）的垃圾回收问题 。 |
+| VM Thread                       | 这个线程就比较牛b了，是JVM里面的线程母体，根据hotspot源码（vmThread.hpp）里面的注释，它是一个单个的对象（最原始的线程）会产生或触发所有其他的线程，这个单个的VM线程是会被其他线程所使用来做一些VM操作（如：清扫垃圾等）。 |
+
+### 调试排错 - Java 问题排查：Linux命令
+
+#### 文本操作
+
+- 文本查找 - grep
+
+  grep常用命令：
+
+  ````sh
+  # 基本使用
+  grep yoursearchkeyword f.txt     #文件查找
+  grep 'KeyWord otherKeyWord' f.txt cpf.txt #多文件查找, 含空格加引号
+  grep 'KeyWord' /home/admin -r -n #目录下查找所有符合关键字的文件
+  grep 'keyword' /home/admin -r -n -i # -i 忽略大小写
+  grep 'KeyWord' /home/admin -r -n --include *.{vm,java} #指定文件后缀
+  grep 'KeyWord' /home/admin -r -n --exclude *.{vm,java} #反匹配
+  
+  # cat + grep
+  cat f.txt | grep -i keyword # 查找所有keyword且不分大小写  
+  cat f.txt | grep -c 'KeyWord' # 统计Keyword次数
+  
+  # seq + grep
+  seq 10 | grep 5 -A 3    #上匹配
+  seq 10 | grep 5 -B 3    #下匹配
+  seq 10 | grep 5 -C 3    #上下匹配，平时用这个就妥了
+  ````
+
+- 文本分析 - awk
+
+  awk基本命令：
+
+  ````sh
+  # 基本使用
+  awk '{print $4,$6}' f.txt
+  awk '{print NR,$0}' f.txt cpf.txt    
+  awk '{print FNR,$0}' f.txt cpf.txt
+  awk '{print FNR,FILENAME,$0}' f.txt cpf.txt
+  awk '{print FILENAME,"NR="NR,"FNR="FNR,"$"NF"="$NF}' f.txt cpf.txt
+  echo 1:2:3:4 | awk -F: '{print $1,$2,$3,$4}'
+  
+  # 匹配
+  awk '/ldb/ {print}' f.txt   #匹配ldb
+  awk '!/ldb/ {print}' f.txt  #不匹配ldb
+  awk '/ldb/ && /LISTEN/ {print}' f.txt   #匹配ldb和LISTEN
+  awk '$5 ~ /ldb/ {print}' f.txt #第五列匹配ldb
+  ````
+
+  内建变量
+
+  ````sh
+  `NR`: NR表示从awk开始执行后，按照记录分隔符读取的数据次数，默认的记录分隔符为换行符，因此默认的就是读取的数据行数，NR可以理解为Number of Record的缩写。
+  
+  `FNR`: 在awk处理多个输入文件的时候，在处理完第一个文件后，NR并不会从1开始，而是继续累加，因此就出现了FNR，每当处理一个新文件的时候，FNR就从1开始计数，FNR可以理解为File Number of Record。
+  
+  `NF`: NF表示目前的记录被分割的字段的数目，NF可以理解为Number of Field。
+  ````
+
+  更多请参考：[Linux awk 命令](https://www.runoob.com/linux/linux-comm-awk.html)
+
+- 文本处理 - sed
+
+  sed常用：
+
+  ````sh
+  # 文本打印
+  sed -n '3p' xxx.log #只打印第三行
+  sed -n '$p' xxx.log #只打印最后一行
+  sed -n '3,9p' xxx.log #只查看文件的第3行到第9行
+  sed -n -e '3,9p' -e '=' xxx.log #打印3-9行，并显示行号
+  sed -n '/root/p' xxx.log #显示包含root的行
+  sed -n '/hhh/,/omc/p' xxx.log # 显示包含"hhh"的行到包含"omc"的行之间的行
+  
+  # 文本替换
+  sed -i 's/root/world/g' xxx.log # 用world 替换xxx.log文件中的root; s==search  查找并替换, g==global  全部替换, -i: implace
+  
+  # 文本插入
+  sed '1,4i hahaha' xxx.log # 在文件第一行和第四行的每行下面添加hahaha
+  sed -e '1i happy' -e '$a new year' xxx.log  #【界面显示】在文件第一行添加happy,文件结尾添加new year
+  sed -i -e '1i happy' -e '$a new year' xxx.log #【真实写入文件】在文件第一行添加happy,文件结尾添加new year
+  
+  # 文本删除
+  sed  '3,9d' xxx.log # 删除第3到第9行,只是不显示而已
+  sed '/hhh/,/omc/d' xxx.log # 删除包含"hhh"的行到包含"omc"的行之间的行
+  sed '/omc/,10d' xxx.log # 删除包含"omc"的行到第十行的内容
+  
+  # 与find结合
+  find . -name  "*.txt" |xargs   sed -i 's/hhhh/\hHHh/g'
+  find . -name  "*.txt" |xargs   sed -i 's#hhhh#hHHh#g'
+  find . -name  "*.txt" -exec sed -i 's/hhhh/\hHHh/g' {} \;
+  find . -name  "*.txt" |xargs cat
+  ````
+
+  更多请参考：[Linux sed 命令 (opens new window)](https://www.runoob.com/linux/linux-comm-sed.html)或者 [Linux sed命令详解](https://www.cnblogs.com/ftl1012/p/9250171.html)
+
+#### 文件操作
+
+- 文件监听 - tail
+
+  最常用的`tail -f filename`
+
+- 文件查找 - find
+
+  ````sh
+  sudo -u admin find /home/admin /tmp /usr -name \*.log(多个目录去找)
+  find . -iname \*.txt(大小写都匹配)
+  find . -type d(当前目录下的所有子目录)
+  find /usr -type l(当前目录下所有的符号链接)
+  find /usr -type l -name "z*" -ls(符号链接的详细信息 eg:inode,目录)
+  find /home/admin -size +250000k(超过250000k的文件，当然+改成-就是小于了)
+  find /home/admin f -perm 777 -exec ls -l {} \; (按照权限查询文件)
+  find /home/admin -atime -1  1天内访问过的文件
+  find /home/admin -ctime -1  1天内状态改变过的文件    
+  find /home/admin -mtime -1  1天内修改过的文件
+  find /home/admin -amin -1  1分钟内访问过的文件
+  find /home/admin -cmin -1  1分钟内状态改变过的文件    
+  find /home/admin -mmin -1  1分钟内修改过的文件
+  ````
+
+- pgm
+
+  批量查询vm-shopbase满足条件的日志
+
+  ````sh
+  pgm -A -f vm-shopbase 'cat /home/admin/shopbase/logs/shopbase.log.2017-01-17|grep 2069861630'
+  ````
+
+#### 查看网络和进程
+
+- 查看所有网络接口的属性
+
+  ````sh
+  [root@pdai.tech ~]# ifconfig
+  eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+          inet 172.31.165.194  netmask 255.255.240.0  broadcast 172.31.175.255
+          ether 00:16:3e:08:c1:ea  txqueuelen 1000  (Ethernet)
+          RX packets 21213152  bytes 2812084823 (2.6 GiB)
+          RX errors 0  dropped 0  overruns 0  frame 0
+          TX packets 25264438  bytes 46566724676 (43.3 GiB)
+          TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+  
+  lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
+          inet 127.0.0.1  netmask 255.0.0.0
+          loop  txqueuelen 1000  (Local Loopback)
+          RX packets 502  bytes 86350 (84.3 KiB)
+          RX errors 0  dropped 0  overruns 0  frame 0
+          TX packets 502  bytes 86350 (84.3 KiB)
+          TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+  ````
+
+- 查看防火墙设置
+
+  ````sh
+  [root@pdai.tech ~]# iptables -L
+  Chain INPUT (policy ACCEPT)
+  target     prot opt source               destination
+  
+  Chain FORWARD (policy ACCEPT)
+  target     prot opt source               destination
+  
+  Chain OUTPUT (policy ACCEPT)
+  target     prot opt source               destination
+  ````
+
+- 查看路由表
+
+  ````sh
+  [root@pdai.tech ~]# route -n
+  Kernel IP routing table
+  Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+  0.0.0.0         172.31.175.253  0.0.0.0         UG    0      0        0 eth0
+  169.254.0.0     0.0.0.0         255.255.0.0     U     1002   0        0 eth0
+  172.31.160.0    0.0.0.0         255.255.240.0   U     0      0        0 eth0
+  ````
+
+- netstat
+
+  ````sh
+  [root@pdai.tech ~]# netstat -lntp
+  Active Internet connections (only servers)
+  Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name  
+  tcp        0      0 0.0.0.0:443             0.0.0.0:*               LISTEN      970/nginx: master p
+  tcp        0      0 0.0.0.0:9999            0.0.0.0:*               LISTEN      1249/java         
+  tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      970/nginx: master p
+  tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN      1547/sshd         
+  tcp6       0      0 :::3306                 :::*                    LISTEN      1894/mysqld       
+  ````
+
+  查看所有已经建立的连接
+
+  ````sh
+  [root@pdai.tech ~]# netstat -antp
+  Active Internet connections (servers and established)
+  Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name
+  tcp        0      0 0.0.0.0:443             0.0.0.0:*               LISTEN      970/nginx: master p
+  tcp        0      0 0.0.0.0:9999            0.0.0.0:*               LISTEN      1249/java
+  tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      970/nginx: master p
+  tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN      1547/sshd
+  tcp        0      0 172.31.165.194:53874    100.100.30.25:80        ESTABLISHED 18041/AliYunDun
+  tcp        0     64 172.31.165.194:22       xxx.194.1.200:2649      ESTABLISHED 32516/sshd: root@pt
+  tcp6       0      0 :::3306                 :::*                    LISTEN      1894/m
+  ````
+
+  查看当前连接
+
+  ````sh
+  [root@pdai.tech ~]# netstat -nat|awk  '{print $6}'|sort|uniq -c|sort -rn
+        5 LISTEN
+        2 ESTABLISHED
+        1 Foreign
+        1 established)
+  ````
+
+  查看网络统计信息进程
+
+  ````sh
+  [root@pdai.tech ~]# netstat -s
+  Ip:
+      21017132 total packets received
+      0 forwarded
+      0 incoming packets discarded
+      21017131 incoming packets delivered
+      25114367 requests sent out
+      324 dropped because of missing route
+  Icmp:
+      18088 ICMP messages received
+      692 input ICMP message failed.
+      ICMP input histogram:
+          destination unreachable: 4241
+          timeout in transit: 19
+          echo requests: 13791
+          echo replies: 4
+          timestamp request: 33
+      13825 ICMP messages sent
+      0 ICMP messages failed
+      ICMP output histogram:
+          destination unreachable: 1
+          echo replies: 13791
+          timestamp replies: 33
+  IcmpMsg:
+          InType0: 4
+          InType3: 4241
+          InType8: 13791
+          InType11: 19
+          InType13: 33
+          OutType0: 13791
+          OutType3: 1
+          OutType14: 33
+  Tcp:
+      12210 active connections openings
+      208820 passive connection openings
+      54198 failed connection attempts
+      9805 connection resets received
+  ...
+  ````
+
+  netstat 请参考这篇文章: [Linux netstat命令详解](https://www.cnblogs.com/ftl1012/p/netstat.html)
+
+- 查看所有进程
+
+  ````sh
+  [root@pdai.tech ~]# ps -ef | grep java
+  root      1249     1  0 Nov04 ?        00:58:05 java -jar /opt/tech_doc/bin/tech_arch-0.0.1-RELEASE.jar --server.port=9999
+  root     32718 32518  0 08:36 pts/0    00:00:00 grep --color=auto java
+  ````
+
+- top
+
+  top除了看一些基本信息之外，剩下的就是配合来查询vm的各种问题了
+
+  ````sh
+  # top -H -p pid
+  top - 08:37:51 up 45 days, 18:45,  1 user,  load average: 0.01, 0.03, 0.05
+  Threads:  28 total,   0 running,  28 sleeping,   0 stopped,   0 zombie
+  %Cpu(s):  0.7 us,  0.7 sy,  0.0 ni, 98.6 id,  0.0 wa,  0.0 hi,  0.0 si,  0.0 st
+  KiB Mem :  1882088 total,    74608 free,   202228 used,  1605252 buff/cache
+  KiB Swap:  2097148 total,  1835392 free,   261756 used.  1502036 avail Mem
+  
+    PID USER      PR  NI    VIRT    RES    SHR S %CPU %MEM     TIME+ COMMAND
+   1347 root      20   0 2553808 113752   1024 S  0.3  6.0  48:46.74 VM Periodic Tas
+   1249 root      20   0 2553808 113752   1024 S  0.0  6.0   0:00.00 java
+   1289 root      20   0 2553808 113752   1024 S  0.0  6.0   0:03.74 java
+  ...
+  ````
+
+#### 查看磁盘和内存相关
+
+- 查看内存使用 - free -m
+
+  ````sh
+  [root@pdai.tech ~]# free -m
+                total        used        free      shared  buff/cache   available
+  Mem:           1837         196         824           0         816        1469
+  Swap:          2047         255        1792
+  ````
+
+- 查看各分区使用情况
+
+  ````sh
+  [root@pdai.tech ~]# df -h
+  Filesystem      Size  Used Avail Use% Mounted on
+  devtmpfs        909M     0  909M   0% /dev
+  tmpfs           919M     0  919M   0% /dev/shm
+  tmpfs           919M  452K  919M   1% /run
+  tmpfs           919M     0  919M   0% /sys/fs/cgroup
+  /dev/vda1        40G   15G   23G  40% /
+  tmpfs           184M     0  184M   0% /run/user/0
+  ````
+
+- 查看指定目录的大小
+
+  ````sh
+  [root@pdai.tech ~]# du -sh
+  803M
+  ````
+
+- 查看内存总量
+
+  ````sh
+  [root@pdai.tech ~]# grep MemTotal /proc/meminfo
+  MemTotal:        1882088 kB
+  ````
+
+- 查看空闲内存量
+
+  ````sh
+  [root@pdai.tech ~]# grep MemFree /proc/meminfo
+  MemFree:           74120 kB
+  ````
+
+- 查看系统负载磁盘和分区
+
+  ````sh
+  [root@pdai.tech ~]# grep MemFree /proc/meminfo
+  MemFree:           74120 kB
+  ````
+
+- 查看系统负载磁盘和分区
+
+  ````sh
+  [root@pdai.tech ~]# cat /proc/loadavg
+  0.01 0.04 0.05 2/174 32751
+  ````
+
+- 查看挂接的分区状态
+
+  ````sh
+  [root@pdai.tech ~]# mount | column -t
+  sysfs       on  /sys                             type  sysfs       (rw,nosuid,nodev,noexec,relatime)
+  proc        on  /proc                            type  proc        (rw,nosuid,nodev,noexec,relatime)
+  devtmpfs    on  /dev                             type  devtmpfs    (rw,nosuid,size=930732k,nr_inodes=232683,mode=755)
+  securityfs  on  /sys/kernel/security             type  securityfs  (rw,nosuid,nodev,noexec,relatime)
+  ...
+  ````
+
+- 查看所有分区
+
+  ````sh
+  [root@pdai.tech ~]# fdisk -l
+  
+  Disk /dev/vda: 42.9 GB, 42949672960 bytes, 83886080 sectors
+  Units = sectors of 1 * 512 = 512 bytes
+  Sector size (logical/physical): 512 bytes / 512 bytes
+  I/O size (minimum/optimal): 512 bytes / 512 bytes
+  Disk label type: dos
+  Disk identifier: 0x0008d73a
+  
+     Device Boot      Start         End      Blocks   Id  System
+  /dev/vda1   *        2048    83884031    41940992   83  Linux
+  ````
+
+- 查看所有交换分区
+
+  ````sh
+  [root@pdai.tech ~]# swapon -s
+  Filename                                Type            Size    Used    Priority
+  /etc/swap                               file    2097148 261756  -2
+  ````
+
+- 查看硬盘大小
+
+  ````sh
+  [root@pdai.tech ~]# fdisk -l |grep Disk
+  Disk /dev/vda: 42.9 GB, 42949672960 bytes, 83886080 sectors
+  Disk label type: dos
+  Disk identifier: 0x0008d73a
+  ````
+
+#### 查看用户和组相关
+
+- 查看活动用户
+
+  ````sh
+  [root@pdai.tech ~]# w
+   08:47:20 up 45 days, 18:54,  1 user,  load average: 0.01, 0.03, 0.05
+  USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT
+  root     pts/0    xxx.194.1.200    08:32    0.00s  0.32s  0.32s -bash
+  ````
+
+- 查看指定用户信息
+
+  ````sh
+  [root@pdai.tech ~]# id
+  uid=0(root) gid=0(root) groups=0(root)
+  ````
+
+- 查看用户登录日志
+
+  ````sh
+  [root@pdai.tech ~]# last
+  root     pts/0        xxx.194.1.200    Fri Dec 20 08:32   still logged in
+  root     pts/0        xxx.73.164.60     Thu Dec 19 21:47 - 00:28  (02:41)
+  ...
+  ````
+
+- 查看系统所有用户
+
+  ````sh
+  [root@pdai.tech ~]# cut -d: -f1 /etc/passwd
+  root
+  ...
+  ````
+
+- 查看系统所有组
+
+  ````sh
+  cut -d: -f1 /etc/group
+  ````
+
+- 查看服务，模块和包相关
+
+  ````sh
+  # 查看当前用户的计划任务服务
+  crontab -l 
+  
+  # 列出所有系统服务
+  chkconfig –list 
+  
+  # 列出所有启动的系统服务程序
+  chkconfig –list | grep on 
+  
+  # 查看所有安装的软件包
+  rpm -qa 
+  
+  # 列出加载的内核模块
+  lsmod 
+  ````
+
+- 查看系统，设备，环境信息
+
+  ````sh
+  # 常用
+  env # 查看环境变量资源
+  uptime # 查看系统运行时间、用户数、负载
+  lsusb -tv # 列出所有USB设备的linux系统信息命令
+  lspci -tv # 列出所有PCI设备
+  head -n 1 /etc/issue # 查看操作系统版本，是数字1不是字母L
+  uname -a # 查看内核/操作系统/CPU信息的linux系统信息命令
+  
+  # /proc/
+  cat /proc/cpuinfo ：查看CPU相关参数的linux系统命令
+  cat /proc/partitions ：查看linux硬盘和分区信息的系统信息命令
+  cat /proc/meminfo ：查看linux系统内存信息的linux系统命令
+  cat /proc/version ：查看版本，类似uname -r
+  cat /proc/ioports ：查看设备io端口
+  cat /proc/interrupts ：查看中断
+  cat /proc/pci ：查看pci设备的信息
+  cat /proc/swaps ：查看所有swap分区的信息
+  cat /proc/cpuinfo |grep "model name" && cat /proc/cpuinfo |grep "physical id"
+  ````
+
+#### tsar
+
+tsar是淘宝开源的的采集工具。很好用, 将历史收集到的数据持久化在磁盘上，所以我们快速来查询历史的系统数据。当然实时的应用情况也是可以查询的啦。
+
+````sh
+tsar  ##可以查看最近一天的各项指标
+tsar --live ##可以查看实时指标，默认五秒一刷
+tsar -d 20161218 ##指定查看某天的数据，貌似最多只能看四个月的数据
+tsar --mem
+tsar --load
+tsar --cpu ##当然这个也可以和-d参数配合来查询某天的单个指标的情况 
+````
+
+### 调试排错 - Java 问题排查：工具单
+
+> Java 在线问题排查主要分两篇：本文是第二篇，通过java调试/排查工具进行问题定位。
+
+#### Java 调试入门工具
+
+- jps
+
+  > jps是jdk提供的一个查看当前java进程的小工具， 可以看做是JavaVirtual Machine Process Status Tool的缩写。
+
+  jps常用命令
+
+  ````sh
+  jps # 显示进程的ID 和 类的名称
+  jps –l # 输出输出完全的包名，应用主类名，jar的完全路径名 
+  jps –v # 输出jvm参数
+  jps –q # 显示java进程号
+  jps -m # main 方法
+  jps -l xxx.xxx.xx.xx # 远程查看 
+  ````
+
+  jps参数
+
+  ````sh
+  -q：仅输出VM标识符，不包括classname,jar name,arguments in main method 
+  -m：输出main method的参数 
+  -l：输出完全的包名，应用主类名，jar的完全路径名 
+  -v：输出jvm参数 
+  -V：输出通过flag文件传递到JVM中的参数(.hotspotrc文件或-XX:Flags=所指定的文件 
+  -Joption：传递参数到vm,例如:-J-Xms512m
+  ````
+
+  > java程序在启动以后，会在java.io.tmpdir指定的目录下，就是临时文件夹里，生成一个类似于hsperfdata_User的文件夹，这个文件夹里（在Linux中为/tmp/hsperfdata_{userName}/），有几个文件，名字就是java进程的pid，因此列出当前运行的java进程，只是把这个目录里的文件名列一下而已。 至于系统的参数什么，就可以解析这几个文件获得。
+
+  更多请参考 [jps - Java Virtual Machine Process Status Tool](https://docs.oracle.com/javase/1.5.0/docs/tooldocs/share/jps.html)
+
+- jstack
+
+  > jstack是jdk自带的线程堆栈分析工具，使用该命令可以查看或导出 Java 应用程序中线程堆栈信息。
+
+  jstack常用命令:
+
+  ````sh
+  # 基本
+  jstack 2815
+  
+  # java和native c/c++框架的所有栈信息
+  jstack -m 2815
+  
+  # 额外的锁信息列表，查看是否死锁
+  jstack -l 2815
+  ````
+
+  jstack参数：
+
+  ````sh
+  -l 长列表. 打印关于锁的附加信息,例如属于java.util.concurrent 的 ownable synchronizers列表.
+  
+  -F 当’jstack [-l] pid’没有相应的时候强制打印栈信息
+  
+  -m 打印java和native c/c++框架的所有栈信息.
+  
+  -h | -help 打印帮助信息
+  ````
+
+  更多请参考: [jvm 性能调优工具之 jstack](https://www.jianshu.com/p/025cb069cb69)
+
+- jinfo
+
+  > jinfo 是 JDK 自带的命令，可以用来查看正在运行的 java 应用程序的扩展参数，包括Java System属性和JVM命令行参数；也可以动态的修改正在运行的 JVM 一些参数。当系统崩溃时，jinfo可以从core文件里面知道崩溃的Java应用程序的配置信息
+
+  ````sh
+  # 输出当前 jvm 进程的全部参数和系统属性
+  jinfo 2815
+  
+  # 输出所有的参数
+  jinfo -flags 2815
+  
+  # 查看指定的 jvm 参数的值
+  jinfo -flag PrintGC 2815
+  
+  # 开启/关闭指定的JVM参数
+  jinfo -flag +PrintGC 2815
+  
+  # 设置flag的参数
+  jinfo -flag name=value 2815
+  
+  # 输出当前 jvm 进行的全部的系统属性
+  jinfo -sysprops 2815
+  ````
+
+  jinfo参数：
+
+  ````sh
+  no option 输出全部的参数和系统属性
+  -flag name 输出对应名称的参数
+  -flag [+|-]name 开启或者关闭对应名称的参数
+  -flag name=value 设定对应名称的参数
+  -flags 输出全部的参数
+  -sysprops 输出系统属性
+  ````
+
+  更多请参考：[jvm 性能调优工具之 jinfo](https://www.jianshu.com/p/8d8aef212b25)
+
+- jmap
+
+  > 命令jmap是一个多功能的命令。它可以生成 java 程序的 dump 文件， 也可以查看堆内对象示例的统计信息、查看 ClassLoader 的信息以及 finalizer 队列。
+
+  两个用途
+
+  ````sh
+  # 查看堆的情况
+  jmap -heap 2815
+  
+  # dump
+  jmap -dump:live,format=b,file=/tmp/heap2.bin 2815
+  jmap -dump:format=b,file=/tmp/heap3.bin 2815
+  
+  # 查看堆的占用
+  jmap -histo 2815 | head -10
+  ````
+
+  jmap参数
+
+  ````sh
+  no option： 查看进程的内存映像信息,类似 Solaris pmap 命令。
+  -heap： 显示Java堆详细信息
+  -histo[:live]： 显示堆中对象的统计信息
+  -clstats：打印类加载器信息
+  -finalizerinfo： 显示在F-Queue队列等待Finalizer线程执行finalizer方法的对象
+  -dump:<dump-options>：生成堆转储快照
+  -F： 当-dump没有响应时，使用-dump或者-histo参数. 在这个模式下,live子参数无效.
+  -help：打印帮助信息
+  -J<flag>：指定传递给运行jmap的JVM的参数
+  ````
+
+  更多请参考：[jvm 性能调优工具之 jmap (opens new window)](https://www.jianshu.com/p/a4ad53179df3)和 [jmap - Memory Map](https://docs.oracle.com/javase/1.5.0/docs/tooldocs/share/jmap.html)
+
+- jstat
+
+  > Jstat是JDK自带的一个轻量级小工具。主要利用JVM内建的指令对Java应用程序的资源和性能进行实时的命令行的监控，包括了对Heap size和垃圾回收状况的监控。
+
+  jstat参数众多，但是使用一个就够了（-gcutil GC统计汇总）
+
+  ````sh
+  jstat -gcutil 2815 1000 
+  ````
+
+- jdb
+
+  > jdb可以用来预发debug,假设你预发的java_home是/opt/java/，远程调试端口是8000.那么
+
+  ````sh
+  jdb -attach 8000
+  ````
+
+  出现以上代表jdb启动成功。后续可以进行设置断点进行调试。
+
+  具体参数可见oracle官方说明[jdb - The Java Debugger](http://docs.oracle.com/javase/7/docs/technotes/tools/windows/jdb.html)
+
+- CHLSDB
+
+  CHLSDB感觉很多情况下可以看到更好玩的东西，不详细叙述了。 查询资料听说jstack和jmap等工具就是基于它的。
+
+  ````sh
+  java -classpath /opt/taobao/java/lib/sa-jdi.jar sun.jvm.hotspot.CLHSDB
+  ````
+
+#### Java 调试进阶工具
+
+- btrace
+
+  首当其冲的要说的是btrace。真是生产环境&预发的排查问题大杀器。 简介什么的就不说了。直接上代码干
+
+  - 查看当前谁调用了ArrayList的add方法，同时只打印当前ArrayList的size大于500的线程调用栈
+
+    ````java
+    @OnMethod(clazz = "java.util.ArrayList", method="add", location = @Location(value = Kind.CALL, clazz = "/./", method = "/./"))
+    public static void m(@ProbeClassName String probeClass, @ProbeMethodName String probeMethod, @TargetInstance Object instance, @TargetMethodOrField String method) {
+    
+        if(getInt(field("java.util.ArrayList", "size"), instance) > 479){
+            println("check who ArrayList.add method:" + probeClass + "#" + probeMethod  + ", method:" + method + ", size:" + getInt(field("java.util.ArrayList", "size"), instance));
+            jstack();
+            println();
+            println("===========================");
+            println();
+        }
+    }
+    ````
+
+  - 监控当前服务方法被调用时返回的值以及请求的参数
+
+    ````java
+    @OnMethod(clazz = "com.taobao.sellerhome.transfer.biz.impl.C2CApplyerServiceImpl", method="nav", location = @Location(value = Kind.RETURN))
+    public static void mt(long userId, int current, int relation, String check, String redirectUrl, @Return AnyType result) {
+    
+        println("parameter# userId:" + userId + ", current:" + current + ", relation:" + relation + ", check:" + check + ", redirectUrl:" + redirectUrl + ", result:" + result);
+    }
+    ````
+
+    btrace 具体可以参考这里：https://github.com/btraceio/btrace
+
+    注意:
+
+    - 经过观察，1.3.9的release输出不稳定，要多触发几次才能看到正确的结果
+    - 正则表达式匹配trace类时范围一定要控制，否则极有可能出现跑满CPU导致应用卡死的情况
+    - 由于是字节码注入的原理，想要应用恢复到正常情况，需要重启应用。
+
+- Greys
+
+  Greys是@杜琨的大作吧。说几个挺棒的功能(部分功能和btrace重合):
+
+  - `sc -df xxx`: 输出当前类的详情,包括源码位置和classloader结构
+  - `trace class method`: 打印出当前方法调用的耗时情况，细分到每个方法, 对排查方法性能时很有帮助。
+
+- Arthas
+
+  > Arthas是基于Greys。
+
+  具体请参考：[调试排错 - Java应用在线调试Arthas](https://www.pdai.tech/md/java/jvm/java-jvm-agent-arthas.html)
+
+- javOSize
+
+  就说一个功能:
+
+  - `classes`：通过修改了字节码，改变了类的内容，即时生效。 所以可以做到快速的在某个地方打个日志看看输出，缺点是对代码的侵入性太大。但是如果自己知道自己在干嘛，的确是不错的玩意儿。
+
+  其他功能Greys和btrace都能很轻易做的到，不说了。
+
+  更多请参考：[官网](http://www.javosize.com/)
+
+- JProfiler
+
+  之前判断许多问题要通过JProfiler，但是现在Greys和btrace基本都能搞定了。再加上出问题的基本上都是生产环境(网络隔离)，所以基本不怎么使用了，但是还是要标记一下。
+
+  更多请参考：[官网](https://www.ej-technologies.com/products/jprofiler/overview.html)
+
+#### 其它工具
+
+- dmesg
+
+  如果发现自己的java进程悄无声息的消失了，几乎没有留下任何线索，那么dmesg一发，很有可能有你想要的。
+
+  sudo dmesg|grep -i kill|less 去找关键字oom_killer。找到的结果类似如下:
+
+  ````sh
+  [6710782.021013] java invoked oom-killer: gfp_mask=0xd0, order=0, oom_adj=0, oom_scoe_adj=0
+  [6710782.070639] [<ffffffff81118898>] ? oom_kill_process+0x68/0x140 
+  [6710782.257588] Task in /LXC011175068174 killed as a result of limit of /LXC011175068174 
+  [6710784.698347] Memory cgroup out of memory: Kill process 215701 (java) score 854 or sacrifice child 
+  [6710784.707978] Killed process 215701, UID 679, (java) total-vm:11017300kB, anon-rss:7152432kB, file-rss:1232kB
+  ````
+
+  以上表明，对应的java进程被系统的OOM Killer给干掉了，得分为854. 解释一下OOM killer（Out-Of-Memory killer），该机制会监控机器的内存资源消耗。当机器内存耗尽前，该机制会扫描所有的进程（按照一定规则计算，内存占用，时间等），挑选出得分最高的进程，然后杀死，从而保护机器。
+
+  dmesg日志时间转换公式: log实际时间=格林威治1970-01-01+(当前时间秒数-系统启动至今的秒数+dmesg打印的log时间)秒数：
+
+  date -d "1970-01-01 UTC `echo "$(date +%s)-$(cat /proc/uptime|cut -f 1 -d' ')+12288812.926194"|bc` seconds" 剩下的，就是看看为什么内存这么大，触发了OOM-Killer了。
+
+### 调试排错 - 9种常见的CMS GC问题分析与解决
+
+略
+
+### 调试排错 - Java 动态调试技术原理
+
+
+
+### 调试排错 - Java 应用在线调试 Arthas
+
+
+
+### 调试排错 - 使用IDEA本地调试和远程调试
+
+#### Debug开篇
+
+如下是在IDEA中启动Debug模式，进入断点后的界面，我这里是Windows，可能和Mac的图标等会有些不一样。就简单说下图中标注的8个地方：
+
+- ⑤ 服务按钮：可以在这里关闭/启动服务，设置断点等。
+
+- ⑧ Watches：查看变量，可以将Variables区中的变量拖到Watches中查看
+
+  ![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-1.png)
+
+#### 智能步入
+
+> 想想，一行代码里有好几个方法，怎么只选择某一个方法进入。之前提到过使用Step Into (Alt + F7) 或者 Force Step Into (Alt + Shift + F7)进入到方法内部，但这两个操作会根据方法调用顺序依次进入，这比较麻烦。
+
+那么智能步入就很方便了，智能步入，这个功能在Run里可以看到，Smart Step Into (Shift + F7)，如下图
+
+![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-19.png)
+
+按Shift + F7，会自动定位到当前断点行，并列出需要进入的方法，如图5.2，点击方法进入方法内部。
+
+如果只有一个方法，则直接进入，类似Force Step Into。
+
+![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-20.png)
+
+#### 断点条件
+
+> > 通过设置断点条件，在满足条件时，才停在断点处，否则直接运行。
+
+- 在断点上右键直接**设置当前断点的条件**，如下图设置exist为true时断点才生效。
+
+  ![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-21.png)
+
+- **点击View Breakpoints (Ctrl + Shift + F8)，查看所有断点**。
+
+  - Java Line Breakpoints 显示了所有的断点，在右边勾选Condition，设置断点的条件。
+
+  - 勾选Log message to console，则会将当前断点行输出到控制台，如图6.3
+
+  - 勾选Evaluate and log，可以在执行这行代码是计算表达式的值，并将结果输出到控制台。
+
+    ![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-22.png)
+
+#### 多线程调试
+
+> 一般情况下我们调试的时候是在一个线程中的，一步一步往下走。但有时候你会发现在Debug的时候，想发起另外一个请求都无法进行了？
+
+那是因为IDEA在Debug时默认阻塞级别是ALL，会阻塞其它线程，只有在当前调试线程走完时才会走其它线程。可以在View Breakpoints里选择Thread，如图7.1，然后点击Make Default设置为默认选项。
+
+![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-30.png)
+
+切换线程，在下图中Frames的下拉列表里，可以切换当前的线程，如下我这里有两个Debug的线程，切换另外一个则进入另一个Debug的线程。
+
+![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-31.png)
+
+#### 断点回退
+
+> 在调试的时候，想要重新走一下流程而不用再次发起一个请求？
+
+- 首先认识下这个**方法调用栈**，如图首先请求进入DemoController的insertDemo方法，然后调用insert方法，其它的invoke我们且先不管，最上面的方法是当前断点所在的方法。
+
+  ![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-32.png)
+
+- 断点回退
+
+  所谓的断点回退，其实就是回退到上一个方法调用的开始处，在IDEA里测试无法一行一行地回退或回到到上一个断点处，而是回到上一个方法。
+
+  回退的方式有两种，一种是Drop Frame按钮，按调用的方法逐步回退，包括三方类库的其它方法
+
+  ![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-33.png)
+
+  取消Show All Frames按钮会显示三方类库的方法
+
+  ![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-34.png)
+
+第二种方式，在调用栈方法上选择要回退的方法，右键选择Drop Frame，回退到该方法的上一个方法调用处，此时再按F9(Resume Program)，可以看到程序进入到该方法的断点处了。
+
+![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-35.png)
+
+但有一点需要注意，断点回退只能重新走一下流程，之前的某些参数/数据的状态已经改变了的是无法回退到之前的状态的，如对象、集合、更新了数据库数据等等。
+
+#### 中断Debug
+
+我也没发现可以直接中断请求的方式(除了关闭服务)，但可以通过Force Return，即强制返回来避免后续的流程，如图
+
+![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-36.png)
+
+#### 远程调试
+
+- 使用特定JVM参数运行服务端代码
+
+  要让远程服务器运行的代码支持远程调试，则启动的时候必须加上特定的JVM参数，这些参数是：
+
+  ````sh
+  -Xdebug -Xrunjdwp:transport=dt_socket,suspend=n,server=y,address=${debug_port}
+  ````
+
+  其中的`${debug_port}`是用户自定义的，为debug端口，本例以5555端口为例。
+
+  本人在这里踩过一个坑，必须要说一下。在使用公司内部的自动化部署平台NDP进行应用部署时，该平台号称支持远程调试，只需要在某个配置页面配置一下调试端口号（没有填写任何IP相关的信息），并且重新发布一下应用即可。事实上也可以发现，上述JVM参数中唯一可变的就是${debug_port}。但是实际在本地连接时发现却始终连不上5555 的调试端口，仔细排查才发现，下面截取了NDP发布的应用所有JVM参数列表中与远程调试相关的JVM启动参数如下：
+
+  ```bash
+  -Xdebug -Xrunjdwp:transport=dt_socket,suspend=n,server=y,address=127.0.0.1:5555
+  ```
+
+  将address设置为127.0.0.1:5555，表示将调试端口限制为本地访问，远程无法访问，这个应该是NDP平台的一个bug，我们在自己设置JVM的启动参数时也需要格外注意。
+
+  如果只是临时调试，在端口号前面不要加上限制访问的IP地址，调试完成之后，将上述JVM参数去除掉之后重新发布下，防范开放远程调试端口可能带来的安全风险。
+
+- 本地连接远程服务器debug端口
+
+  打开Intellij IDEA，在顶部靠右的地方选择”Edit Configurations…”，进去之后点击+号，选择”Remote”，按照下图的只是填写红框内的内容，其中Name填写名称，这里为remote webserver，host为远程代码运行的机器的ip/hostname，port为上一步指定的debug_port，本例是5555。然后点击Apply，最后点击OK即可
+
+  ![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-41.png)
+
+  现在在上一步选择”Edit Configurations…”的下拉框的位置选择上一步创建的remote webserver，然后点击右边的debug按钮(长的像臭虫那个)，看控制台日志，如果出现类似“Connected to the target VM, address: ‘xx.xx.xx.xx:5555’, transport: ‘socket’”的字样，就表示连接成功过了。我这里实际显示的内容如下：
+
+  ````sh
+  Connected to the target VM, address: '10.185.0.192:15555', transport: 'socket'
+  ````
+
+- 设置断点，开始调试
+
+  远程debug模式已经开启，现在可以在需要调试的代码中打断点了，比如：
+
+  ![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-42.png)
+
+  如图中所示，如果断点内有√，则表示选取的断点正确。
+
+  现在在本地发送一个到远程服务器的请求，看本地控制台的bug界面，划到debugger这个标签，可以看到当前远程服务的内部状态（各种变量）已经全部显示出来了，并且在刚才设置了断点的地方，也显示了该行的变量值。
+
+  ![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/java/java-debug-idea-43.png)
