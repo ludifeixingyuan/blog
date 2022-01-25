@@ -91,12 +91,17 @@ JDK中关于ArrayList的实现，请参考:《Java - ArrayList 源码解析》
 
 相关题目
 
-1. [283. Move Zeroes (Easy)](https://leetcode.com/problems/move-zeroes/description/)**把数组中的 0 移到末尾**
-2. [566. Reshape the Matrix (Easy)](https://leetcode.com/problems/reshape-the-matrix/description/)**改变矩阵维度**
-3. [485. Max Consecutive Ones (Easy)](https://leetcode.com/problems/max-consecutive-ones/description/)**找出数组中最长的连续 1**
-4. [240. Search a 2D Matrix II (Medium)](https://leetcode.com/problems/search-a-2d-matrix-ii/description/)**有序矩阵查找**
-5. [378. Kth Smallest Element in a Sorted Matrix ((Medium))](https://leetcode.com/problems/kth-smallest-element-in-a-sorted-matrix/description/)**有序矩阵中第K小的元素**
-6. 
+1. [283. Move Zeroes (Easy)](https://leetcode.com/problems/move-zeroes/description/)把数组中的 0 移到末尾
+2. [566. Reshape the Matrix (Easy)](https://leetcode.com/problems/reshape-the-matrix/description/)改变矩阵维度
+3. [485. Max Consecutive Ones (Easy)](https://leetcode.com/problems/max-consecutive-ones/description/)找出数组中最长的连续 1
+4. [240. Search a 2D Matrix II (Medium)](https://leetcode.com/problems/search-a-2d-matrix-ii/description/)有序矩阵查找
+5. [378. Kth Smallest Element in a Sorted Matrix ((Medium))](https://leetcode.com/problems/kth-smallest-element-in-a-sorted-matrix/description/)有序矩阵中第K小的元素
+6. [645. Set Mismatch (Easy)](https://leetcode.com/problems/set-mismatch/description/) 错误的集合
+7. [667. Beautiful Arrangement II (Medium)](https://leetcode.com/problems/beautiful-arrangement-ii/description/)**数组相邻差值的个数**
+8. [697. Degree of an Array (Easy)](https://leetcode.com/problems/degree-of-an-array/description/)
+9. [766. Toeplitz Matrix (Easy)](https://leetcode.com/problems/toeplitz-matrix/description/)
+10. [565. Array Nesting (Medium)](https://leetcode.com/problems/array-nesting/description/)
+11. [769. Max Chunks To Make Sorted (Medium)](https://leetcode.com/problems/max-chunks-to-make-sorted/description/)
 
 
 
