@@ -51,4 +51,118 @@ O(1)<O(logN)<O(N)<O(N*logN)<O(N^2)、O(N^3)...O(N^K)<O(2^N)、O(3^N)...O(K^N)<O(
 
 求mid，left + (right-left)/2 比 (left+right)/2 安全，left+right有可能溢出。
 
- 
+## 02_认识异或运算
+
+异或运算：相同为0，不同为1
+
+同或运算：相同为1，不同为0
+
+7∧13 = 10
+
+![image-20220127105858623](https://tva1.sinaimg.cn/large/008i3skNly1gys1pnkhjkj31ke0sgjub.jpg)
+
+ 特性：
+
+1. 0∧N = N
+2. N∧N = 0
+3. 符合交换律和结合律 A∧B = B∧A、(A∧B)∧C = A∧(B∧C)    
+
+题目1.
+
+A和B交换位置，不开辟新空间
+
+Int a = 10,b = 100（a和b值可以一样，内存区域不能是同一个 ）
+
+a = a ∧ b
+
+b = a ∧ b
+
+a = a ∧ b
+
+题目2.
+
+一个数组中有一种数出现奇数次，其他数出现偶数次，怎么找到并打印这种数
+
+传统做法申请一个map，统计次数 -> 装逼失败，空间复杂度不大好
+
+[a,b,c,d,...]
+
+答案：eor = 0，eor = eor ∧ a，eor = eor ∧ b，eor = eor ∧ c，eor = eor ∧ d，...
+
+![image-20220127112349937](https://tva1.sinaimg.cn/large/008i3skNly1gys2fko05lj31km0t4wis.jpg)
+
+题目3.
+
+怎么把一个int类型的数，提取出最右侧的1来
+
+解析：
+
+a取反= ～a
+
+a & (~a+1) = a & (-a)
+
+如代码：
+
+int a = 7
+
+int b = (~a + 1) 和 b = -a，效果一样
+
+答案：
+
+a&(-a)
+
+![image-20220127112809735](https://tva1.sinaimg.cn/large/008i3skNly1gys2jyzr2oj31ka0sm78d.jpg)
+
+题目4. 
+
+一个数组中，有两种数出现了奇数次，其他数都出现了偶数次，怎么找到并打印这两种数
+
+arr[a,b,c,c,d,d,e,e]
+
+eor数组中全部数，最终结果为 eor = a ∧ b
+
+![image-20220127115134234](https://tva1.sinaimg.cn/large/008i3skNly1gys38c3t10j30rk0ocju0.jpg)
+
+题目5.
+
+一个数组中一种数出现K次，其他数都出现了M次，
+
+M > 1 , K < M，找到出现K次的数
+
+要求，额外空间复杂度O(1)，时间复杂度O(N )
+
+略
+
+
+
+## 03_一些数据结构基础
+
+#### 链表
+
+单链表
+
+class Node{
+
+ 	private T value;
+
+ 	private Node next;
+
+}
+
+双链表
+
+class DoubleNode{
+
+ 	private T value;
+
+ 	private DoubleNode last;
+
+ 	private DoubleNode next;
+
+}
+
+单链表和双链表最简单的练习
+
+1. 单链表和双链表如何反转
+2. 把给定值都删除
+

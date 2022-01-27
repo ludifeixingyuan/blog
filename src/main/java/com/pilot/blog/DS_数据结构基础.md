@@ -91,17 +91,17 @@ JDK中关于ArrayList的实现，请参考:《Java - ArrayList 源码解析》
 
 相关题目
 
-1. [283. Move Zeroes (Easy)](https://leetcode.com/problems/move-zeroes/description/)把数组中的 0 移到末尾
-2. [566. Reshape the Matrix (Easy)](https://leetcode.com/problems/reshape-the-matrix/description/)改变矩阵维度
-3. [485. Max Consecutive Ones (Easy)](https://leetcode.com/problems/max-consecutive-ones/description/)找出数组中最长的连续 1
-4. [240. Search a 2D Matrix II (Medium)](https://leetcode.com/problems/search-a-2d-matrix-ii/description/)有序矩阵查找
-5. [378. Kth Smallest Element in a Sorted Matrix ((Medium))](https://leetcode.com/problems/kth-smallest-element-in-a-sorted-matrix/description/)有序矩阵中第K小的元素
-6. [645. Set Mismatch (Easy)](https://leetcode.com/problems/set-mismatch/description/) 错误的集合
+1. [283. Move Zeroes (Easy)](https://leetcode.com/problems/move-zeroes/description/)**把数组中的 0 移到末尾**
+2. [566. Reshape the Matrix (Easy)](https://leetcode.com/problems/reshape-the-matrix/description/)**改变矩阵维度**
+3. [485. Max Consecutive Ones (Easy)](https://leetcode.com/problems/max-consecutive-ones/description/)**找出数组中最长的连续 1**
+4. [240. Search a 2D Matrix II (Medium)](https://leetcode.com/problems/search-a-2d-matrix-ii/description/)**有序矩阵查找**
+5. [378. Kth Smallest Element in a Sorted Matrix ((Medium))](https://leetcode.com/problems/kth-smallest-element-in-a-sorted-matrix/description/)**有序矩阵中第K小的元素**
+6. [645. Set Mismatch (Easy)](https://leetcode.com/problems/set-mismatch/description/) **错误的集合**
 7. [667. Beautiful Arrangement II (Medium)](https://leetcode.com/problems/beautiful-arrangement-ii/description/)**数组相邻差值的个数**
-8. [697. Degree of an Array (Easy)](https://leetcode.com/problems/degree-of-an-array/description/)
-9. [766. Toeplitz Matrix (Easy)](https://leetcode.com/problems/toeplitz-matrix/description/)
-10. [565. Array Nesting (Medium)](https://leetcode.com/problems/array-nesting/description/)
-11. [769. Max Chunks To Make Sorted (Medium)](https://leetcode.com/problems/max-chunks-to-make-sorted/description/)
+8. [697. Degree of an Array (Easy)](https://leetcode.com/problems/degree-of-an-array/description/)**数组的度**
+9. [766. Toeplitz Matrix (Easy)](https://leetcode.com/problems/toeplitz-matrix/description/)**对角元素相等的矩阵**
+10. [565. Array Nesting (Medium)](https://leetcode.com/problems/array-nesting/description/)**嵌套数组**
+11. [769. Max Chunks To Make Sorted (Medium)](https://leetcode.com/problems/max-chunks-to-make-sorted/description/)**分隔数组**
 
 
 
@@ -117,9 +117,235 @@ JDK中关于ArrayList的实现，请参考:《Java - ArrayList 源码解析》
 
 ## 线性表 - 链表
 
+> n个节点离散分配，彼此通过指针相连，每个节点只有一个前驱节点，每个节点只有一个后续节点，首节点没有前驱节点，尾节点没有后续节点。确定一个链表我们只需要头指针，通过头指针就可以把整个链表都能推出来。
 
+### 优缺点
+
+链表优点
+
+- 空间没有限制
+- 插入删除元素很快
+
+链表缺点 存取速度很慢
+
+一个链表节点对象就创建完成了，但理解链表本身并不难，但做相关的操作却并非易事，其算法包括且不限于:
+
+- 插入节点
+- 遍历
+- 查找
+- 清空
+- 销毁
+- 求长度
+- 排序
+- 删除节点
+- 去重
+
+JDK中关于链表的实现，请参考:[《Java - LinkedList 源码解析》](https://www.pdai.tech/md/java/collection/java-collection-LinkedList.html)
+
+### 链表相关题目
+
+1. [160. Intersection of Two Linked Lists (Easy)](https://leetcode.com/problems/intersection-of-two-linked-lists/description/)**找出两个链表的交点**
+
+   ````java
+   public class Solution {
+       public ListNode getIntersectionNode(ListNode headA, ListNode headB) {
+           if (headA == null || headB == null) {
+               return null;
+           }
+           // 定义两个指针, 第一轮让两个到达末尾的节点指向另一个链表的头部, 最后如果相遇则为交点(在第一轮移动中恰好抹除了长度差)。两个指针等于移动了相同的距离, 有交点就返回, 无交点就是各走了两条指针的长度 
+           // 在这里第一轮体现在pA和pB第一次到达尾部会移向另一链表的表头, 而第二轮体现在如果pA或pB相交就返回交点, 不相交最后就是null==null
+           ListNode pA = headA, pB = headB;
+           while (pA != pB) {
+               pA = pA == null ? headB : pA.next;
+               pB = pB == null ? headA : pB.next;
+           }
+           return pA;
+       }
+   }
+   ````
+
+2. [206. Reverse Linked List (Easy)](https://leetcode.com/problems/reverse-linked-list/description/)**链表反转**
+
+   ````java
+   public ListNode reverseList(ListNode head) {
+     ListNode pre = null;
+     ListNode curr = head;
+     while(curr != null){
+       ListNode next = curr.next;
+       curr.next = pre;
+       pre = curr;
+       curr = next;
+     }
+     return pre;
+   }
+   ````
+
+3. [21. Merge Two Sorted Lists (Easy)](https://leetcode.com/problems/merge-two-sorted-lists/description/)**归并两个有序的链表**
+
+   如果两个链表有一个为空，递归结束。
+
+   ````java
+   class Solution {
+       public ListNode mergeTwoLists(ListNode l1, ListNode l2) {
+           if (l1 == null) {
+               return l2;
+           } else if (l2 == null) {
+               return l1;
+           } else if (l1.val < l2.val) {
+               l1.next = mergeTwoLists(l1.next, l2);
+               return l1;
+           } else {
+               l2.next = mergeTwoLists(l1, l2.next);
+               return l2;
+           }
+       }
+   }
+   ````
+
+4. [83. Remove Duplicates from Sorted List (Easy)](https://leetcode.com/problems/remove-duplicates-from-sorted-list/description/)**从有序链表中删除重复节点**
+
+   开辟一个临时的链表变量
+
+   ````java
+   public ListNode deleteDuplicates(ListNode head) {
+     ListNode cur = head;
+     while(cur.next != null){
+       if(cur.val == cur.next.val){
+         cur.next = cur.next.next;
+       }else{
+         cur = cur.next;
+       }
+     }
+     return head;
+   }
+   ````
+
+5. [19. Remove Nth Node From End of List (Medium)](https://leetcode.com/problems/remove-nth-node-from-end-of-list/description/)**删除链表的倒数第 n 个节点**
+
+6. [24. Swap Nodes in Pairs (Medium)](https://leetcode.com/problems/swap-nodes-in-pairs/description/)**交换链表中的相邻结点**
+
+7. [445. Add Two Numbers II (Medium)](https://leetcode.com/problems/add-two-numbers-ii/description/)**链表求和**
+
+8. [234. Palindrome Linked List (Easy)](https://leetcode.com/problems/palindrome-linked-list/description/)**回文链表**
+
+   方法1. 将值复制到数组中后用双指针法
+
+   ````java
+   class Solution {
+       public boolean isPalindrome(ListNode head) {
+           List<Integer> vals = new ArrayList<Integer>();
+   
+           // 将链表的值复制到数组中
+           ListNode currentNode = head;
+           while (currentNode != null) {
+               vals.add(currentNode.val);
+               currentNode = currentNode.next;
+           }
+   
+           // 使用双指针判断是否回文
+           int front = 0;
+           int back = vals.size() - 1;
+           while (front < back) {
+               if (!vals.get(front).equals(vals.get(back))) {
+                   return false;
+               }
+               front++;
+               back--;
+           }
+           return true;
+       }
+   }
+   ````
+
+9. [725. Split Linked List in Parts(Medium)](https://leetcode.com/problems/split-linked-list-in-parts/description/)**分隔链表**
+
+10. [328. Odd Even Linked List (Medium)](https://leetcode.com/problems/odd-even-linked-list/description/)**链表元素按奇偶聚集**
 
 ## 线性表(散列) - 哈希表
+
+> 散列表（Hash table，也叫哈希表），是根据关键码值(Key value)而直接进行访问的数据结构。也就是说，它通过把关键码值映射到表中一个位置来访问记录，以加快查找的速度。这个映射函数叫做散列函数，存放记录的数组叫做散列表。
+
+哈希表使用 O(N) 空间复杂度存储数据，并且以 O(1) 时间复杂度求解问题。
+
+### 哈希表相关题目
+
+1. [1. Two Sum (Easy)](https://leetcode.com/problems/two-sum/description/)**数组中两个数的和为给定值**
+
+   ````java
+   public int[] twoSum(int[] nums, int target) {
+       HashMap<Integer, Integer> indexForNum = new HashMap<>();
+       for (int i = 0; i < nums.length; i++) {
+           if (indexForNum.containsKey(target - nums[i])) {
+               return new int[]{indexForNum.get(target - nums[i]), i};
+           } else {
+               indexForNum.put(nums[i], i);
+           }
+       }
+       return null;
+   }
+   ````
+
+2. [217. Contains Duplicate (Easy)](https://leetcode.com/problems/contains-duplicate/description/)**判断数组是否含有重复元素**
+
+   ````java
+   public boolean containsDuplicate(int[] nums) {
+       Set<Integer> set = new HashSet<>();
+       for (int num : nums) {
+           set.add(num);
+       }
+       return set.size() < nums.length;
+   }
+   ````
+
+3. [594. Longest Harmonious Subsequence (Easy)](https://leetcode.com/problems/longest-harmonious-subsequence/description/)**最长和谐序列**
+
+   Map.get(Obj) 不能是返回null的
+
+   ````java
+   public int findLHS(int[] nums) {
+       Map<Integer, Integer> countForNum = new HashMap<>();
+       for (int num : nums) {
+           countForNum.put(num, countForNum.getOrDefault(num, 0) + 1);
+       }
+       int longest = 0;
+       for (int num : countForNum.keySet()) {
+           if (countForNum.containsKey(num + 1)) {
+               longest = Math.max(longest, countForNum.get(num + 1) + countForNum.get(num));
+           }
+       }
+       return longest;
+   }
+   ````
+
+4. [128. Longest Consecutive Sequence (Hard)](https://leetcode.com/problems/longest-consecutive-sequence/description/)**最长连续序列**
+
+## 线性表 - 栈和队列
+
+> 数组和链表都是线性存储结构的基础，栈和队列都是线性存储结构的应用。
+>
+> 栈的顺序为先进后出，队列的顺序有先进先出
+
+### 栈
+
+![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/alg/alg-stack-1.png)
+
+栈的实现
+
+- 使用数组实现的叫`静态栈`
+- 使用链表实现的叫`动态栈`
+
+### 队列
+
+![img](https://pdai-1257820000.cos.ap-beijing.myqcloud.com/pdai.tech/public/_images/alg/alg-queue-1.png)
+
+队列的实现
+
+- 使用数组实现的叫`静态队列`
+- 使用链表实现的叫`动态队列`
+
+JDK中实现[《Java - Stack & Queue 源码解析》](https://www.pdai.tech/md/java/collection/java-collection-Queue&Stack.html)
+
+### 栈和队列相关题目
 
 
 
