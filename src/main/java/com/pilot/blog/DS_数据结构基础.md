@@ -347,7 +347,162 @@ JDK中实现[《Java - Stack & Queue 源码解析》](https://www.pdai.tech/md/j
 
 ### 栈和队列相关题目
 
+1. [232. Implement Queue using Stacks (Easy)](https://leetcode.com/problems/implement-queue-using-stacks/description/)**用栈实现队列**
 
+   栈的顺序为后进先出，而队列的顺序为先进先出。使用两个栈实现队列，一个元素需要经过两个栈才能出队列，在经过第一个栈时元素顺序被反转，经过第二个栈时再次被反转，此时就是先进先出顺序。
+
+   ````java
+   class MyQueue {
+   
+       private Stack<Integer> in;
+       private Stack<Integer> out;
+   
+       public MyQueue() {
+           in = new Stack<>();
+           out = new Stack<>();
+       }
+       
+       public void push(int x) {
+           in.push(x);
+       }
+       
+       public int pop() {
+           in2out();
+           return out.pop();
+       }
+       
+       public int peek() {
+           in2out();
+           return out.peek();
+       }
+       
+       public boolean empty() {
+           return in.isEmpty() && out.isEmpty();
+       }
+   
+       private void in2out(){
+           if(out.isEmpty()){
+               while(!in.isEmpty()){
+                   out.push(in.pop());
+               }
+           }
+       }
+   }
+   ````
+
+2. [225. Implement Stack using Queues (Easy)](https://leetcode.com/problems/implement-stack-using-queues/description/)**用队列实现栈**
+
+   在将一个元素 x 插入队列时，为了维护原来的后进先出顺序，需要让 x 插入队列首部。而队列的默认插入顺序是队列尾部，因此在将 x 插入队列尾部之后，需要让除了 x 之外的所有元素出队列，再入队列。
+
+   ```java
+   class MyStack {
+     private Queue<Integer> queue ;
+     public MyStack() {
+         queue = new LinkedList<>(); 
+     }
+   
+     public void push(int x) {
+         queue.add(x);
+         int cnt = queue.size();
+         while(cnt > 1){
+             queue.add(queue.poll());
+             cnt --;
+         }
+     }
+   
+     public int pop() {
+         return queue.remove();
+     }
+   
+     public int top() {
+         return queue.peek();
+     }
+   
+     public boolean empty() {
+         return queue.isEmpty();
+     }
+   }
+   ```
+
+3. [155. Min Stack (Easy)](https://leetcode.com/problems/min-stack/description/)**最小值栈**
+
+   ![fig1](https://assets.leetcode-cn.com/solution-static/155/155_fig1.gif)
+
+   ````java
+   class MinStack {
+       private Stack<Integer> dataStack;
+       private Stack<Integer> minStack;
+       private Integer min;
+   
+       public MinStack() {
+           dataStack = new Stack<>();
+           minStack = new Stack<>();
+           min = Integer.MAX_VALUE;
+       }
+       
+       public void push(int val) {
+           dataStack.push(val);
+           min = Math.min(min,val);
+           minStack.push(min);
+       }
+       
+       public void pop() {
+           dataStack.pop();
+           minStack.pop();
+           min = minStack.isEmpty() ? Integer.MAX_VALUE : minStack.peek();
+       }
+       
+       public int top() {
+           return dataStack.peek();
+       }
+       
+       public int getMin() {
+           return minStack.isEmpty() ? Integer.MAX_VALUE : minStack.peek();
+       }
+   }
+   ````
+
+4. [20. Valid Parentheses (Easy)](https://leetcode.com/problems/valid-parentheses/description/)**用栈实现括号匹配**
+
+   最后返回 stack.isEmpty 是为了处理 `((`这种情况，一开始做题我直接返回了 true.错了
+
+   ````java
+   class Solution {
+       public boolean isValid(String s) {
+           int n = s.length();
+           if (n % 2 == 1) {
+               return false;
+           }
+           
+           Stack<Character> stack = new Stack<>();
+           for (char c : s.toCharArray()) {
+               if (c == '(' || c == '[' || c == '{') {
+                   stack.push(c);
+               } else {
+                   if (stack.isEmpty()) {
+                       return false;
+                   }
+                   char ch = stack.pop();
+                   Boolean flag1 = c == ')' && ch != '(';
+                   Boolean flag2 = c == ']' && ch != '[';
+                   Boolean flag3 = c == '}' && ch != '{';
+                   if (flag1 || flag2 || flag3) {
+                       return false;
+                   }
+               }
+           }
+           return stack.isEmpty();
+       }
+   }
+   ````
+
+5. [739. Daily Temperatures (Medium)](https://leetcode.com/problems/daily-temperatures/description/)**数组中元素与下一个比它大的元素之间的距离**
+
+   
+
+6. [503. Next Greater Element II (Medium)](https://leetcode.com/problems/next-greater-element-ii/description/)**循环数组中比当前元素大的下一个元素**
+
+   
 
 ## 树 - 基础和Overview
 
